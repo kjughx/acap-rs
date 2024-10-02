@@ -9,6 +9,10 @@ use std::{
 use libc::{c_char, c_void};
 use log::{debug, error};
 
+pub mod error;
+
+use error::{BorrowedError, MdbError, OwnedError};
+
 macro_rules! suppress_unwind {
     ($f:expr) => {
         std::panic::catch_unwind($f).unwrap_or_else(|e| {
@@ -22,77 +26,8 @@ macro_rules! suppress_unwind {
 }
 
 type OnMessage = dyn FnMut(&Message) + Send + 'static;
-type OnError = dyn FnMut(&Error) + Send + 'static;
-type OnDone = dyn FnMut(Option<&Error>) + Send + 'static;
-
-unsafe fn pchar_to_string(p_value: *const c_char) -> String {
-    assert!(!p_value.is_null());
-    let value = String::from(CStr::from_ptr(p_value).to_str().unwrap());
-    value
-}
-
-enum OwnedOrBorrowedError {
-    Owned(*mut mdb_sys::mdb_error_t),
-    Borrowed(*const mdb_sys::mdb_error_t),
-}
-pub struct Error(OwnedOrBorrowedError);
-
-impl Debug for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Code: {}; Message: {:?};", self.code(), self.message())
-    }
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.code(), self.message())
-    }
-}
-
-impl Drop for Error {
-    fn drop(&mut self) {
-        unsafe {
-            match &mut self.0 {
-                OwnedOrBorrowedError::Owned(ptr) => {
-                    mdb_sys::mdb_error_destroy(ptr);
-                }
-                OwnedOrBorrowedError::Borrowed(_) => {}
-            }
-        }
-    }
-}
-unsafe impl Send for Error {}
-// Note that error is not Sync
-
-impl std::error::Error for Error {}
-
-impl Error {
-    fn new_owned(ptr: *mut mdb_sys::mdb_error_t) -> Self {
-        assert!(!ptr.is_null());
-        Self(OwnedOrBorrowedError::Owned(ptr))
-    }
-    fn new_borrowed(ptr: *const mdb_sys::mdb_error_t) -> Self {
-        assert!(!ptr.is_null());
-        Self(OwnedOrBorrowedError::Borrowed(ptr))
-    }
-    fn as_ref(&self) -> &mdb_sys::mdb_error_t {
-        unsafe {
-            match self.0 {
-                OwnedOrBorrowedError::Owned(ptr) => ptr.as_ref(),
-                OwnedOrBorrowedError::Borrowed(ptr) => ptr.as_ref(),
-            }
-        }
-        .unwrap()
-    }
-
-    fn code(&self) -> i32 {
-        self.as_ref().code
-    }
-
-    fn message(&self) -> String {
-        unsafe { pchar_to_string(self.as_ref().message) }
-    }
-}
+type OnError = dyn FnMut(&BorrowedError) + Send + 'static;
+type OnDone = dyn FnMut(Option<&BorrowedError>) + Send + 'static;
 
 pub struct Connection {
     ptr: *mut mdb_sys::mdb_connection_t,
@@ -101,7 +36,7 @@ pub struct Connection {
 
 impl Connection {
     // TODO: Consider adopting a builder-like pattern.
-    pub fn try_new(on_error: Option<Box<OnError>>) -> Result<Self, Error> {
+    pub fn try_new(on_error: Option<Box<OnError>>) -> Result<Self, OwnedError> {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
@@ -123,7 +58,7 @@ impl Connection {
                     if !on_error.is_null() {
                         drop(Box::from_raw(on_error));
                     }
-                    Err(Error::new_owned(error))
+                    Err(OwnedError::new(error))
                 }
                 (true, true) => {
                     panic!("mdb_connection_create returned neither a connection nor an error");
@@ -136,7 +71,7 @@ impl Connection {
         suppress_unwind!(|| {
             // TODO: Remove excessive logging once we are somewhat confident this works
             debug!("Handling error {error:?} with user_data {user_data:?}");
-            let error = Error::new_borrowed(error);
+            let error = BorrowedError::new(error);
             let user_data = user_data as *mut Box<OnError>;
             (*user_data)(&error);
         });
@@ -165,7 +100,11 @@ pub struct SubscriberConfig {
 }
 
 impl SubscriberConfig {
-    pub fn try_new(topic: &CStr, source: &CStr, on_message: Box<OnMessage>) -> Result<Self, Error> {
+    pub fn try_new(
+        topic: &CStr,
+        source: &CStr,
+        on_message: Box<OnMessage>,
+    ) -> Result<Self, OwnedError> {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let on_message = Box::into_raw(Box::new(on_message));
@@ -185,7 +124,7 @@ impl SubscriberConfig {
                 (false, true) => Ok(Self { ptr, on_message }),
                 (true, false) => {
                     drop(Box::from_raw(on_message));
-                    Err(Error::new_owned(error))
+                    Err(OwnedError::new(error))
                 }
                 (true, true) => {
                     panic!(
@@ -240,7 +179,7 @@ impl<'a> Subscriber<'a> {
         connection: &'a Connection,
         mut config: SubscriberConfig,
         on_done: Box<OnDone>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, OwnedError> {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let on_done = Box::into_raw(Box::new(on_done));
@@ -268,7 +207,7 @@ impl<'a> Subscriber<'a> {
                 }
                 (true, false) => {
                     drop(Box::from_raw(on_done));
-                    Err(Error::new_owned(error))
+                    Err(OwnedError::new(error))
                 }
                 (true, true) => {
                     panic!("mdb_subscriber_create_async returned neither a connection nor an error")
@@ -283,7 +222,7 @@ impl<'a> Subscriber<'a> {
             debug!("Handling on_done {error:?} with user_data {user_data:?}");
             let error = match error.is_null() {
                 true => None,
-                false => Some(Error::new_borrowed(error)),
+                false => Some(BorrowedError::new(error)),
             };
             let user_data = user_data as *mut Box<OnDone>;
             (*user_data)(error.as_ref());
