@@ -1,12 +1,7 @@
 // TODO: Add documentation.
-use std::{
-    any,
-    ffi::CStr,
-    fmt::{Debug, Display, Formatter},
-    slice::from_raw_parts,
-};
+use std::{any, ffi::CStr, marker::PhantomData, slice::from_raw_parts};
 
-use libc::{c_char, c_void};
+use libc::c_void;
 use log::{debug, error};
 
 pub mod error;
@@ -53,7 +48,10 @@ impl Connection {
                 (false, false) => {
                     panic!("mdb_connection_create returned both a connection and an error");
                 }
-                (false, true) => Ok(Self { ptr, on_error }),
+                (false, true) => Ok(Self {
+                    ptr,
+                    on_error,
+                }),
                 (true, false) => {
                     if !on_error.is_null() {
                         drop(Box::from_raw(on_error));
@@ -121,7 +119,10 @@ impl SubscriberConfig {
                 (false, false) => {
                     panic!("mdb_subscriber_config_create returned both a connection and an error")
                 }
-                (false, true) => Ok(Self { ptr, on_message }),
+                (false, true) => Ok(Self {
+                    ptr,
+                    on_message,
+                }),
                 (true, false) => {
                     drop(Box::from_raw(on_message));
                     Err(OwnedError::new(error))
@@ -230,7 +231,7 @@ impl<'a> Subscriber<'a> {
     }
 }
 
-impl<'a> Drop for Subscriber<'a> {
+impl Drop for Subscriber<'_> {
     // TODO: Consider allowing the user to control when potentially blocking calls happen.
     // SAFETY: Once destroy has returned, it is guaranteed that neither callback will be running nor
     // ever run again, so it is safe to drop them.
@@ -245,19 +246,22 @@ impl<'a> Drop for Subscriber<'a> {
     }
 }
 
-unsafe impl<'a> Send for Subscriber<'a> {}
+unsafe impl Send for Subscriber<'_> {}
 // This is Sync as well afaic but so far I have not seen a use case, so it seems safer to defer
 // implementation until it is needed or the Send and Sync properties are clearly guaranteed by
 // the C API.
 
-pub struct Message {
+pub struct Message<'a> {
     ptr: *const mdb_sys::mdb_message_t,
+    _marker: PhantomData<&'a mdb_sys::mdb_message_t>,
 }
 
-impl Message {
+impl<'a> Message<'_> {
     unsafe fn from_raw(ptr: *const mdb_sys::mdb_message_t) -> Self {
-        // TODO: Can we encode that this is never owned?
-        Self { ptr }
+        Self {
+            ptr,
+            _marker: PhantomData,
+        }
     }
     pub fn payload(&self) -> &[u8] {
         unsafe {
