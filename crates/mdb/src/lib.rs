@@ -33,34 +33,31 @@ impl Connection {
     // TODO: Consider adopting a builder-like pattern.
     pub fn try_new(on_error: Option<Box<OnError>>) -> Result<Self, OwnedError> {
         debug!("Creating {}...", any::type_name::<Self>());
-        unsafe {
-            let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
-            let on_error = match on_error {
-                None => std::ptr::null_mut(),
-                Some(on_error) => Box::into_raw(Box::new(on_error)),
-            };
-            let ptr = mdb_sys::mdb_connection_create(
+        let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
+        let on_error = match on_error {
+            None => std::ptr::null_mut(),
+            Some(on_error) => Box::into_raw(Box::new(on_error)),
+        };
+        let ptr = unsafe {
+            mdb_sys::mdb_connection_create(
                 Some(Self::on_error),
                 on_error as *mut c_void,
                 &mut error,
-            );
-            match (ptr.is_null(), error.is_null()) {
-                (false, false) => {
-                    panic!("mdb_connection_create returned both a connection and an error");
+            )
+        };
+        match (ptr.is_null(), error.is_null()) {
+            (false, false) => {
+                panic!("mdb_connection_create returned both a connection and an error");
+            }
+            (false, true) => Ok(Self { ptr, on_error }),
+            (true, false) => {
+                if !on_error.is_null() {
+                    drop(unsafe { Box::from_raw(on_error) });
                 }
-                (false, true) => Ok(Self {
-                    ptr,
-                    on_error,
-                }),
-                (true, false) => {
-                    if !on_error.is_null() {
-                        drop(Box::from_raw(on_error));
-                    }
-                    Err(OwnedError::new(error))
-                }
-                (true, true) => {
-                    panic!("mdb_connection_create returned neither a connection nor an error");
-                }
+                Err(OwnedError::new(error))
+            }
+            (true, true) => {
+                panic!("mdb_connection_create returned neither a connection nor an error");
             }
         }
     }
@@ -104,34 +101,29 @@ impl SubscriberConfig {
         on_message: Box<OnMessage>,
     ) -> Result<Self, OwnedError> {
         debug!("Creating {}...", any::type_name::<Self>());
-        unsafe {
-            let on_message = Box::into_raw(Box::new(on_message));
+        let on_message = Box::into_raw(Box::new(on_message));
 
-            let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
-            let ptr = mdb_sys::mdb_subscriber_config_create(
+        let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
+        let ptr = unsafe {
+            mdb_sys::mdb_subscriber_config_create(
                 topic.as_ptr(),
                 source.as_ptr(),
                 Some(Self::on_message),
                 on_message as *mut c_void,
                 &mut error,
-            );
-            match (ptr.is_null(), error.is_null()) {
-                (false, false) => {
-                    panic!("mdb_subscriber_config_create returned both a connection and an error")
-                }
-                (false, true) => Ok(Self {
-                    ptr,
-                    on_message,
-                }),
-                (true, false) => {
-                    drop(Box::from_raw(on_message));
-                    Err(OwnedError::new(error))
-                }
-                (true, true) => {
-                    panic!(
-                        "mdb_subscriber_config_create returned neither a connection nor an error"
-                    )
-                }
+            )
+        };
+        match (ptr.is_null(), error.is_null()) {
+            (false, false) => {
+                panic!("mdb_subscriber_config_create returned both a connection and an error")
+            }
+            (false, true) => Ok(Self { ptr, on_message }),
+            (true, false) => {
+                drop(unsafe { Box::from_raw(on_message) });
+                Err(OwnedError::new(error))
+            }
+            (true, true) => {
+                panic!("mdb_subscriber_config_create returned neither a connection nor an error")
             }
         }
     }
@@ -182,37 +174,37 @@ impl<'a> Subscriber<'a> {
         on_done: Box<OnDone>,
     ) -> Result<Self, OwnedError> {
         debug!("Creating {}...", any::type_name::<Self>());
-        unsafe {
-            let on_done = Box::into_raw(Box::new(on_done));
-            let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
-            let ptr = mdb_sys::mdb_subscriber_create_async(
+        let on_done = Box::into_raw(Box::new(on_done));
+        let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
+        let ptr = unsafe {
+            mdb_sys::mdb_subscriber_create_async(
                 connection.ptr,
                 config.ptr,
                 Some(Self::on_done),
                 on_done as *mut c_void,
                 &mut error,
-            );
-            match (ptr.is_null(), error.is_null()) {
-                (false, false) => {
-                    panic!("mdb_subscriber_create_async returned both a connection and an error")
-                }
-                (false, true) => {
-                    let on_message = config.on_message;
-                    config.on_message = std::ptr::null_mut();
-                    Ok(Self {
-                        _connection: connection,
-                        ptr,
-                        on_done,
-                        on_message,
-                    })
-                }
-                (true, false) => {
-                    drop(Box::from_raw(on_done));
-                    Err(OwnedError::new(error))
-                }
-                (true, true) => {
-                    panic!("mdb_subscriber_create_async returned neither a connection nor an error")
-                }
+            )
+        };
+        match (ptr.is_null(), error.is_null()) {
+            (false, false) => {
+                panic!("mdb_subscriber_create_async returned both a connection and an error")
+            }
+            (false, true) => {
+                let on_message = config.on_message;
+                config.on_message = std::ptr::null_mut();
+                Ok(Self {
+                    _connection: connection,
+                    ptr,
+                    on_done,
+                    on_message,
+                })
+            }
+            (true, false) => {
+                drop(Box::from_raw(on_done));
+                Err(OwnedError::new(error))
+            }
+            (true, true) => {
+                panic!("mdb_subscriber_create_async returned neither a connection nor an error")
             }
         }
     }
