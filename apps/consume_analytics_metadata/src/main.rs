@@ -1,7 +1,7 @@
 use std::{ffi::CStr, process::abort, thread::sleep, time::Duration};
 
 use log::{error, info};
-use mdb::{Connection, Subscriber, SubscriberConfig};
+use mdb::{Connection, Subscriber, SubscriberConfig, error::BorrowedError, Message};
 
 const TOPIC: &CStr = c"com.axis.analytics_scene_description.v0.beta";
 const SOURCE: &CStr = c"1";
@@ -9,7 +9,7 @@ const SOURCE: &CStr = c"1";
 fn main() {
     acap_logging::init_logger();
 
-    let connection = Connection::try_new(Some(Box::new(|e| {
+    let connection = Connection::try_new(Some(Box::new(|e: BorrowedError| {
         error!("Not connected because {e:?}");
         abort();
     })))
@@ -18,7 +18,7 @@ fn main() {
     let config = SubscriberConfig::try_new(
         TOPIC,
         SOURCE,
-        Box::new(|message| {
+        Box::new(|message: Message| {
             let payload = String::from_utf8_lossy(message.payload());
             let libc::timespec{ tv_sec, tv_nsec } = message.timestamp();
             info!("message received from topic: {TOPIC:?} on source: {SOURCE:?}: Monotonic time - {tv_sec}.{tv_nsec:0>9}. Data - {payload}");
@@ -28,7 +28,7 @@ fn main() {
     let _subscriber = Subscriber::try_new(
         &connection,
         config,
-        Box::new(|e| match e {
+        Box::new(|e: Option<BorrowedError>| match e {
             None => info!("Subscribed"),
             Some(e) => {
                 error!("Not subscribed because {e:?}");
