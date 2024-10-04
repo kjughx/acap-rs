@@ -18,17 +18,15 @@ pub struct Bbox {
 
 impl Drop for Bbox {
     fn drop(&mut self) {
-        unsafe {
-            if self.ptr.is_null() {
-                return;
-            }
-            if !bbox_sys::bbox_destroy(self.ptr) {
-                let error = std::io::Error::last_os_error();
-                panic!(
-                    "Could not destroy {}: {error:?}",
-                    std::any::type_name::<Self>()
-                );
-            }
+        if self.ptr.is_null() {
+            return;
+        }
+        if unsafe { !bbox_sys::bbox_destroy(self.ptr) } {
+            let error = std::io::Error::last_os_error();
+            panic!(
+                "Could not destroy {}: {error:?}",
+                std::any::type_name::<Self>()
+            );
         }
     }
 }
@@ -37,30 +35,28 @@ impl Bbox {
     ///
     /// Panics if `!(1..=4.contains(&channels.len())`
     pub fn try_new(channels: &[u32]) -> std::io::Result<Self> {
-        unsafe {
-            let ptr = match channels.len() {
+        let ptr = unsafe {
+            match channels.len() {
                 0 => panic!("Expected at least one channel, got 0"),
                 1 => bbox_sys::bbox_new(1, channels[0]),
                 2 => bbox_sys::bbox_new(2, channels[0], channels[1]),
                 3 => bbox_sys::bbox_new(3, channels[0], channels[1], channels[2]),
                 4 => bbox_sys::bbox_new(4, channels[0], channels[1], channels[2], channels[3]),
                 n => panic!("Expected at most 4 channels, got {n}"),
-            };
-            if ptr.is_null() {
-                return Err(std::io::Error::last_os_error());
             }
-            Ok(Self { ptr })
+        };
+        if ptr.is_null() {
+            return Err(std::io::Error::last_os_error());
         }
+        Ok(Self { ptr })
     }
 
     pub fn try_view_new(view: u32) -> std::io::Result<Self> {
-        unsafe {
-            let ptr = bbox_sys::bbox_view_new(view);
-            if ptr.is_null() {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(Self { ptr })
+        let ptr = unsafe { bbox_sys::bbox_view_new(view) };
+        if ptr.is_null() {
+            return Err(std::io::Error::last_os_error());
         }
+        Ok(Self { ptr })
     }
 
     // TODO: Consider changing this and/or the `Drop` implementation.
@@ -144,15 +140,11 @@ pub struct Color {
 
 impl Color {
     pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        unsafe {
-            let raw = bbox_sys::bbox_color_from_rgb(r, g, b);
-            Self { raw }
-        }
+        let raw = unsafe { bbox_sys::bbox_color_from_rgb(r, g, b) };
+        Self { raw }
     }
     pub fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        unsafe {
-            let raw = bbox_sys::bbox_color_from_rgba(r, g, b, a);
-            Self { raw }
-        }
+        let raw = unsafe { bbox_sys::bbox_color_from_rgba(r, g, b, a) };
+        Self { raw }
     }
 }
