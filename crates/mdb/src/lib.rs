@@ -20,16 +20,9 @@ macro_rules! suppress_unwind {
     };
 }
 
-pub trait Callback<T>: FnMut(T) + Send + 'static {}
-impl<T, F> Callback<T> for F where F: FnMut(T) + Send + 'static {}
-
-type OnMessage = dyn for<'a> Callback<Message<'a>>;
-type OnError = dyn for<'a> Callback<BorrowedError<'a>>;
-type OnDone = dyn for<'a> Callback<Option<BorrowedError<'a>>>;
-
 pub struct Connection {
     ptr: *mut mdb_sys::mdb_connection_t,
-    on_error: *mut OnError,
+    drop_on_error: Option<Deferred>,
 }
 
 impl Connection {
@@ -49,7 +42,7 @@ impl Connection {
     /// ```
     pub fn try_new<F>(on_error: Option<F>) -> Result<Self, OwnedError>
     where
-        F: for<'a> Callback<BorrowedError<'a>>,
+        F: for<'a> FnMut(BorrowedError<'a>) + Send + 'static,
     {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
@@ -57,6 +50,10 @@ impl Connection {
             let on_error = match on_error {
                 None => std::ptr::null_mut(),
                 Some(on_error) => Box::into_raw(Box::new(on_error)),
+            };
+            let drop_on_error = match on_error.is_null() {
+                false => Some(Deferred::drop_box(on_error)),
+                true => None,
             };
             let ptr = mdb_sys::mdb_connection_create(
                 Some(Self::on_error::<F>),
@@ -67,13 +64,8 @@ impl Connection {
                 (false, false) => {
                     panic!("mdb_connection_create returned both a connection and an error");
                 }
-                (false, true) => Ok(Self { ptr, on_error }),
-                (true, false) => {
-                    if !on_error.is_null() {
-                        drop(Box::from_raw(on_error));
-                    }
-                    Err(OwnedError::new(error))
-                }
+                (false, true) => Ok(Self { ptr, drop_on_error }),
+                (true, false) => Err(OwnedError::new(error)),
                 (true, true) => {
                     panic!("mdb_connection_create returned neither a connection nor an error");
                 }
@@ -83,7 +75,7 @@ impl Connection {
 
     unsafe extern "C" fn on_error<F>(error: *mut mdb_sys::mdb_error_t, user_data: *mut c_void)
     where
-        F: for<'a> Callback<BorrowedError<'a>>,
+        F: for<'a> FnMut(BorrowedError<'a>) + Send + 'static,
     {
         suppress_unwind!(|| {
             // TODO: Remove excessive logging once we are somewhat confident this works
@@ -103,7 +95,6 @@ impl Drop for Connection {
         // to it at construction so accessing `on_error` without synchronization is safe.
         unsafe {
             mdb_sys::mdb_connection_destroy(&mut self.ptr);
-            drop(Box::from_raw(self.on_error));
         }
     }
 }
@@ -111,19 +102,33 @@ impl Drop for Connection {
 unsafe impl Send for Connection {}
 unsafe impl Sync for Connection {}
 
+struct Deferred(Option<Box<dyn FnOnce()>>);
+impl Drop for Deferred {
+    fn drop(&mut self) {
+        self.0.take().unwrap()()
+    }
+}
+
+impl Deferred {
+    unsafe fn drop_box<T: 'static>(ptr: *mut T) -> Self {
+        Self(Some(Box::new(move || drop(Box::from_raw(ptr)))))
+    }
+}
+
 pub struct SubscriberConfig {
     ptr: *mut mdb_sys::mdb_subscriber_config_t,
-    on_message: *mut OnMessage,
+    drop_on_message: Deferred,
 }
 
 impl SubscriberConfig {
     pub fn try_new<F>(topic: &CStr, source: &CStr, on_message: F) -> Result<Self, OwnedError>
     where
-        F: for<'a> Callback<Message<'a>>,
+        F: for<'a> FnMut(Message<'a>) + Send + 'static,
     {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let on_message = Box::into_raw(Box::new(on_message));
+            let drop_on_message = Deferred::drop_box(on_message);
 
             let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
             let ptr = mdb_sys::mdb_subscriber_config_create(
@@ -137,11 +142,11 @@ impl SubscriberConfig {
                 (false, false) => {
                     panic!("mdb_subscriber_config_create returned both a connection and an error")
                 }
-                (false, true) => Ok(Self { ptr, on_message }),
-                (true, false) => {
-                    drop(Box::from_raw(on_message));
-                    Err(OwnedError::new(error))
-                }
+                (false, true) => Ok(Self {
+                    ptr,
+                    drop_on_message,
+                }),
+                (true, false) => Err(OwnedError::new(error)),
                 (true, true) => {
                     panic!(
                         "mdb_subscriber_config_create returned neither a connection nor an error"
@@ -155,7 +160,7 @@ impl SubscriberConfig {
         message: *const mdb_sys::mdb_message_t,
         user_data: *mut c_void,
     ) where
-        F: for<'a> Callback<Message<'a>>,
+        F: for<'a> FnMut(Message<'a>) + Send + 'static,
     {
         suppress_unwind!(|| {
             debug!("Handling message {message:?} with user_data {user_data:?}");
@@ -176,14 +181,13 @@ impl Drop for SubscriberConfig {
         // in mdb_subscriber_t which we destroy here so it is also safe to drop on_message.
         unsafe {
             mdb_sys::mdb_subscriber_config_destroy(&mut self.ptr);
-            drop(Box::from_raw(self.on_message));
         }
     }
 }
 
 pub struct Subscriber<'a> {
     ptr: *mut mdb_sys::mdb_subscriber_t,
-    on_done: *mut OnDone,
+    drop_on_done: Deferred,
     _config: SubscriberConfig,
     _marker: PhantomData<&'a Connection>,
 }
@@ -195,11 +199,12 @@ impl<'a> Subscriber<'a> {
         on_done: F,
     ) -> Result<Self, OwnedError>
     where
-        F: for<'c> Callback<Option<BorrowedError<'c>>>,
+        F: for<'c> FnMut(Option<BorrowedError<'c>>) + Send + 'static,
     {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let on_done = Box::into_raw(Box::new(on_done));
+            let drop_on_done = Deferred::drop_box(on_done);
             let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
             let ptr = mdb_sys::mdb_subscriber_create_async(
                 connection.ptr,
@@ -214,7 +219,7 @@ impl<'a> Subscriber<'a> {
                 }
                 (false, true) => Ok(Self {
                     ptr,
-                    on_done,
+                    drop_on_done,
                     _config: config,
                     _marker: PhantomData,
                 }),
@@ -231,7 +236,7 @@ impl<'a> Subscriber<'a> {
 
     unsafe extern "C" fn on_done<F>(error: *const mdb_sys::mdb_error_t, user_data: *mut c_void)
     where
-        F: for<'c> Callback<Option<BorrowedError<'c>>>,
+        F: for<'c> FnMut(Option<BorrowedError<'c>>) + Send + 'static,
     {
         suppress_unwind!(|| {
             // TODO: Remove excessive logging once we are somewhat confident this works
@@ -255,7 +260,6 @@ impl Drop for Subscriber<'_> {
     fn drop(&mut self) {
         unsafe {
             mdb_sys::mdb_subscriber_destroy(&mut self.ptr);
-            drop(Box::from_raw(self.on_done))
         }
     }
 }
