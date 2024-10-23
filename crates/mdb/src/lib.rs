@@ -22,7 +22,7 @@ macro_rules! suppress_unwind {
 
 pub struct Connection {
     ptr: *mut mdb_sys::mdb_connection_t,
-    drop_on_error: Option<Deferred>,
+    _on_error: Option<Deferred>,
 }
 
 impl Connection {
@@ -52,7 +52,7 @@ impl Connection {
                 Some(on_error) => Box::into_raw(Box::new(on_error)),
             };
             let drop_on_error = match on_error.is_null() {
-                false => Some(Deferred::drop_box(on_error)),
+                false => Some(Deferred::new(on_error)),
                 true => None,
             };
             let ptr = mdb_sys::mdb_connection_create(
@@ -64,7 +64,10 @@ impl Connection {
                 (false, false) => {
                     panic!("mdb_connection_create returned both a connection and an error");
                 }
-                (false, true) => Ok(Self { ptr, drop_on_error }),
+                (false, true) => Ok(Self {
+                    ptr,
+                    _on_error: drop_on_error,
+                }),
                 (true, false) => Err(OwnedError::new(error)),
                 (true, true) => {
                     panic!("mdb_connection_create returned neither a connection nor an error");
@@ -110,14 +113,14 @@ impl Drop for Deferred {
 }
 
 impl Deferred {
-    unsafe fn drop_box<T: 'static>(ptr: *mut T) -> Self {
+    unsafe fn new<T: 'static>(ptr: *mut T) -> Self {
         Self(Some(Box::new(move || drop(Box::from_raw(ptr)))))
     }
 }
 
 pub struct SubscriberConfig {
     ptr: *mut mdb_sys::mdb_subscriber_config_t,
-    drop_on_message: Deferred,
+    _on_message: Deferred,
 }
 
 impl SubscriberConfig {
@@ -128,7 +131,7 @@ impl SubscriberConfig {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let on_message = Box::into_raw(Box::new(on_message));
-            let drop_on_message = Deferred::drop_box(on_message);
+            let drop_on_message = Deferred::new(on_message);
 
             let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
             let ptr = mdb_sys::mdb_subscriber_config_create(
@@ -144,7 +147,7 @@ impl SubscriberConfig {
                 }
                 (false, true) => Ok(Self {
                     ptr,
-                    drop_on_message,
+                    _on_message: drop_on_message,
                 }),
                 (true, false) => Err(OwnedError::new(error)),
                 (true, true) => {
@@ -187,7 +190,7 @@ impl Drop for SubscriberConfig {
 
 pub struct Subscriber<'a> {
     ptr: *mut mdb_sys::mdb_subscriber_t,
-    drop_on_done: Deferred,
+    _on_done: Deferred,
     _config: SubscriberConfig,
     _marker: PhantomData<&'a Connection>,
 }
@@ -204,7 +207,7 @@ impl<'a> Subscriber<'a> {
         debug!("Creating {}...", any::type_name::<Self>());
         unsafe {
             let on_done = Box::into_raw(Box::new(on_done));
-            let drop_on_done = Deferred::drop_box(on_done);
+            let drop_on_done = Deferred::new(on_done);
             let mut error: *mut mdb_sys::mdb_error_t = std::ptr::null_mut();
             let ptr = mdb_sys::mdb_subscriber_create_async(
                 connection.ptr,
@@ -219,7 +222,7 @@ impl<'a> Subscriber<'a> {
                 }
                 (false, true) => Ok(Self {
                     ptr,
-                    drop_on_done,
+                    _on_done: drop_on_done,
                     _config: config,
                     _marker: PhantomData,
                 }),
