@@ -1,7 +1,11 @@
+#![forbid(unsafe_code)]
+//! An example app that subscribes to analytics scene description data using [`mdb`].
+
 use std::{ffi::CStr, process::abort, thread::sleep, time::Duration};
 
 use log::{error, info};
-use mdb::{error::Error, Connection, Subscriber, SubscriberConfig};
+use mdb::error::Error;
+use mdb::{Connection, Subscriber, SubscriberConfig};
 
 const TOPIC: &CStr = c"com.axis.analytics_scene_description.v0.beta";
 const SOURCE: &CStr = c"1";
@@ -9,8 +13,8 @@ const SOURCE: &CStr = c"1";
 fn main() {
     acap_logging::init_logger();
 
-    let connection = Connection::try_new(Some(|err: &Error| {
-        error!("Not connected because {err:?}");
+    let connection = Connection::try_new(Some(|e: &Error| {
+        error!("Not connected because {e:?}");
         abort();
     }))
     .unwrap();
@@ -25,15 +29,14 @@ fn main() {
         },
     )
     .unwrap();
-    let _subscriber =
-        Subscriber::try_new(&connection, config, |err| match err {
-            None => info!("Subscribed"),
-            Some(err) => {
-                error!("Not subscribed because {err:?}");
-                abort();
-            }
-        })
-        .unwrap();
+    let _subscriber = Subscriber::try_new(&connection, config, |e| match e {
+        None => info!("Subscribed"),
+        Some(e) => {
+            error!("Not subscribed because {e:?}");
+            abort();
+        }
+    })
+    .unwrap();
 
     loop {
         sleep(Duration::from_secs(1));
@@ -51,10 +54,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let mut droppable_tx = Some(tx);
 
-        let connection = Connection::try_new(Some(|err: &Error| {
-            println!("Not connected because {err:?}")
-        }))
-        .unwrap();
+        let connection =
+            Connection::try_new(Some(|e: &Error| println!("Not connected because {e:?}"))).unwrap();
         let config = SubscriberConfig::try_new(TOPIC, SOURCE, move |message| {
             let payload = String::from_utf8(message.payload().to_vec());
             let Some(tx) = &droppable_tx else {
@@ -67,12 +68,11 @@ mod tests {
             }
         })
         .unwrap();
-        let _subscriber =
-            Subscriber::try_new(&connection, config, |err| match err {
-                None => println!("Subscribed"),
-                Some(err) => println!("Not subscribed because {err:?}"),
-            })
-            .unwrap();
+        let _subscriber = Subscriber::try_new(&connection, config, |e| match e {
+            None => println!("Subscribed"),
+            Some(e) => println!("Not subscribed because {e:?}"),
+        })
+        .unwrap();
 
         let payload = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
         assert!(!payload.is_empty());
