@@ -205,6 +205,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "axoverlay"
+version = "0.0.0"
+dependencies = [
+ "axoverlay-sys",
+ "glib",
+ "glib-sys",
+ "log",
+]
+
+[[package]]
+name = "axoverlay-sys"
+version = "0.0.0"
+dependencies = [
+ "bindgen",
+ "glib-sys",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
+name = "axoverlay_example"
+version = "0.0.0"
+dependencies = [
+ "acap-logging",
+ "anyhow",
+ "axoverlay",
+ "glib",
+ "libc",
+ "log",
+]
+
+[[package]]
 name = "axparameter"
 version = "0.0.0"
 dependencies = [
